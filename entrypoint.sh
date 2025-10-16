@@ -66,13 +66,33 @@ for id in "${VLANS[@]}"; do
     ip link set "${BASE_IF}.${id}" up
 done
 
-# Pomocná: vyber DHCP klienta (udhcpc prefer, jinak dhclient)
+# Pomocná: start DHCP klienta jako běžícího procesu → automaticky obnovuje lease
 dhcp_client() {
+    local ifc="$1"
+
+    mkdir -p /run /var/lib/dhclient /var/run
+
     if command -v udhcpc >/dev/null 2>&1; then
-        # busybox udhcpc
-        udhcpc -i "$1" -s /usr/share/udhcpc/default.script -t 3 -T 2 -A 1 -q
+        # Spustíme udhcpc v popředí (-f), ale dáme ho na pozadí (&), aby zůstal běžet
+        # a dělal renew/rebind. Nechceme -q (to by skončil po prvním lease).
+        # -t 0 = nekonečné pokusy, -B broadcast, -S log na stdout, -p pidfile.
+        local pidfile="/run/udhcpc-${ifc}.pid"
+        local hook="/usr/share/udhcpc/default.script"
+        [ -f "$hook" ] || hook="/usr/share/udhcpc/script.d/default.script"
+        [ -f "$hook" ] || hook="/etc/udhcpc/default.script"
+        [ -f "$hook" ] || hook="/bin/busybox"
+        echo "DHCP: starting udhcpc on ${ifc}"
+        udhcpc -i "$ifc" -s "$hook" -p "$pidfile" -t 0 -T 2 -A 3 -B -S -f >/dev/null 2>&1 &
+        echo "DHCP: udhcpc running on ${ifc} (PID $!)"
+        return 0
     elif command -v dhclient >/dev/null 2>&1; then
-        dhclient -4 -v "$1"
+        # dhclient se daemonizuje a lease obnovuje sám
+        local pidfile="/run/dhclient-${ifc}.pid"
+        local leasef="/var/lib/dhclient/dhclient-${ifc}.leases"
+        echo "DHCP: starting dhclient on ${ifc}"
+        dhclient -4 -pf "$pidfile" -lf "$leasef" "$ifc"
+        echo "DHCP: dhclient running on ${ifc} (pidfile ${pidfile})"
+        return 0
     else
         echo "WARN: žádný DHCP klient (udhcpc ani dhclient) není k dispozici"
         return 1
@@ -90,11 +110,11 @@ case "$IP_MODE" in
     dhcp)
         for id in "${VLANS[@]}"; do
             id="$(echo "$id" | trim)"
-            echo "DHCP: requesting lease on ${BASE_IF}.${id}"
+            echo "DHCP: starting client on ${BASE_IF}.${id}"
             if dhcp_client "${BASE_IF}.${id}"; then
-                echo "DHCP: lease obtained on ${BASE_IF}.${id}"
+                echo "DHCP: client running on ${BASE_IF}.${id} (lease will auto-renew)"
             else
-                echo "DHCP: no lease on ${BASE_IF}.${id}"
+                echo "DHCP: failed to start on ${BASE_IF}.${id}"
                 [ "$DHCP_FALLBACK_LL" = "true" ] && assign_ll "$BASE_IF" "$id"
             fi
         done
