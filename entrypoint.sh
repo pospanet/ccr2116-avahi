@@ -142,11 +142,38 @@ echo "Avahi allow-interfaces: ${IFLIST}"
 
 # 4) D-Bus + Avahi
 mkdir -p /run/dbus
+
 # některé base image potřebují machine-id, ať je po ruce:
 if [ ! -s /var/lib/dbus/machine-id ] && command -v dbus-uuidgen >/dev/null 2>&1; then
     mkdir -p /var/lib/dbus
     dbus-uuidgen > /var/lib/dbus/machine-id
 fi
-dbus-daemon --system
+
+echo "D-Bus: pre-clean /run/dbus (power-cut safe)"
+rm -f /run/dbus/dbus.pid
+rm -f /run/dbus/system_bus_socket
+
+# Spusť D-Bus (ideálně bez pidfile, pokud to umí)
+if dbus-daemon --help 2>/dev/null | grep -q -- '--nopidfile'; then
+    echo "D-Bus: starting dbus-daemon --system --nofork --nopidfile"
+    dbus-daemon --system --nofork --nopidfile &
+else
+    echo "D-Bus: starting dbus-daemon --system --nofork"
+    dbus-daemon --system --nofork &
+fi
+
+# Počkej na socket
+for i in {1..50}; do
+    [ -S /run/dbus/system_bus_socket ] && break
+    sleep 0.1
+done
+[ -S /run/dbus/system_bus_socket ] || { echo "D-Bus: socket not ready"; exit 1; }
+
+# --- Avahi ---
+echo "Avahi: pre-clean /run/avahi-daemon (power-cut safe)"
+mkdir -p /run/avahi-daemon
+rm -f /run/avahi-daemon/pid
+rm -f /run/avahi-daemon/socket
+rm -f /run/avahi-daemon/avahi-daemon.pid 2>/dev/null || true
 
 exec avahi-daemon --debug
