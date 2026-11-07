@@ -303,6 +303,91 @@ expect_reject "two trunk candidates" "ambiguous trunk" \
     VLAN_LIST=10 IP_MODE=static STATIC_MAP='10:1.2.3.4/24' STARTUP_TIMEOUT=5
 ip link del enx1 2>/dev/null; ip link del enx2 2>/dev/null
 
+echo "== sysfs pseudo-entry (bonding_masters) is not a trunk candidate =="
+# CCR2116 regression: RouterOS /sys/class/net contains regular-file pseudo
+# entries (e.g. bonding_masters) that are NOT netdevices. They have no ifindex
+# file and `ip link show dev` fails - the detector must ignore them so the one
+# REAL trunk is still auto-selected (previously: 'ambiguous trunk candidates:
+# bonding_masters veth-Avahi'). A fixture tree + a mocked `ip` exercise the
+# exact detection function extracted from /entrypoint.sh in a subshell.
+detect_fixture() (
+    set -e
+    . /usr/local/lib/avahi-reflector/lib.sh
+    # extract ONLY the detect_candidates function body from the shipped
+    # entrypoint so the test exercises the real code path, not a copy.
+    eval "$(awk '/^detect_candidates\(\)/,/^\}/' /entrypoint.sh)"
+    fake=/tmp/fake-net; rm -rf "$fake"; mkdir -p "$fake"
+    # real trunk device: netdevice dir with ifindex + a live `ip` answer
+    mkdir -p "$fake/trunk0"; echo 3 >"$fake/trunk0/ifindex"; : >"$fake/trunk0/.live"
+    # pseudo-entry: a regular FILE, no ifindex - like RouterOS bonding_masters
+    echo x >"$fake/bonding_masters"
+    # stale sysfs entry: has ifindex file but no live device (`ip` fails)
+    mkdir -p "$fake/ghost0"; echo 9 >"$fake/ghost0/ifindex"
+    # a real VLAN child: ifindex + live + a vlan type-line (must be skipped)
+    mkdir -p "$fake/trunk0.10"; echo 4 >"$fake/trunk0.10/ifindex"
+    : >"$fake/trunk0.10/.live"; : >"$fake/trunk0.10/.vlan"
+    ip() {
+        # find the operand after 'dev'
+        local d="" a prev=""
+        for a in "$@"; do [ "$prev" = dev ] && d="$a"; prev="$a"; done
+        [ -n "$d" ] || return 1
+        [ -f "$fake/$d/.live" ] || return 1
+        echo "3: $d: <BROADCAST,MULTICAST,UP> mtu 1500"
+        [ -f "$fake/$d/.vlan" ] && echo "    vlan protocol 802.1Q id 10"
+        return 0
+    }
+    detect_candidates "$fake"
+)
+out="$(detect_fixture)"
+if [ "$out" = "trunk0" ]; then
+    ok "sysfs pseudo-entries + stale entries ignored -> lone real trunk emitted"
+else
+    bad "detect_candidates fixture (got: $(echo "$out" | tr '\n' ' '))"
+fi
+rm -rf /tmp/fake-net
+
+# multiple REAL netdevices in sysfs still fail closed (ambiguity protection)
+detect_amb() (
+    set -e
+    . /usr/local/lib/avahi-reflector/lib.sh
+    eval "$(awk '/^detect_candidates\(\)/,/^\}/' /entrypoint.sh)"
+    fake=/tmp/fake-net2; rm -rf "$fake"; mkdir -p "$fake"
+    for n in e0 e1; do
+        mkdir -p "$fake/$n"; echo 5 >"$fake/$n/ifindex"; : >"$fake/$n/.live"
+    done
+    echo x >"$fake/bonding_masters"      # pseudo-entry still not counted
+    ip() {
+        local d="" a prev=""
+        for a in "$@"; do [ "$prev" = dev ] && d="$a"; prev="$a"; done
+        [ -n "$d" ] || return 1
+        [ -f "$fake/$d/.live" ] || return 1
+        echo "5: $d: <BROADCAST,MULTICAST,UP> mtu 1500"; return 0
+    }
+    detect_candidates "$fake"
+)
+out="$(detect_amb)"
+if [ "$(printf '%s\n' "$out" | sort | tr '\n' ' ')" = "e0 e1 " ]; then
+    ok "two real netdevices -> both emitted (ambiguity protection intact)"
+else
+    bad "two-device fixture (got: $(echo "$out" | tr '\n' ' '))"
+fi
+rm -rf /tmp/fake-net2
+
+echo "== unique trunk auto-detect logs BASE_IF=... (auto-detected) =="
+# only 'trunk0' exists besides lo -> auto-detect must pick it and say so
+# explicitly, then reach ready. Exercises the sysfs ifindex+if_exists gate on
+# a REAL interface end-to-end.
+start_ep /tmp/ep-auto.log VLAN_LIST=10 IP_MODE=static \
+    STATIC_MAP='10:192.168.10.250/24' STARTUP_TIMEOUT=25
+wait_for 35 grep -q 'ready:' /tmp/ep-auto.log
+if grep -q 'ready:' /tmp/ep-auto.log \
+    && grep -q 'BASE_IF=trunk0 (auto-detected)' /tmp/ep-auto.log; then
+    ok "lone real interface auto-detected, BASE_IF logged, ready"
+else
+    bad "auto-detect trunk0"; tail -5 /tmp/ep-auto.log
+fi
+stop_ep || bad "auto-detect supervisor hung on TERM (had to SIGKILL)"
+
 echo "== veth trunk (@-suffix) accepted =="
 ip link add wan0 type veth peer name wan0p 2>/dev/null
 ip link set wan0 multicast on up 2>/dev/null

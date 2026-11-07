@@ -255,15 +255,30 @@ preflight() {
 # could alias a different device. sysfs entries are the authoritative names.
 # Real device TYPE is then checked via `ip -d` type-line (never a name match):
 # a RouterOS trunk is typically a plain eth/veth/dummy, NOT a vlan child.
+#
+# /sys/class/net also contains regular-file pseudo-entries that are NOT
+# netdevices at all (RouterOS exposes e.g. 'bonding_masters'). A plain glob
+# would happily print those as trunk candidates. A real netdevice always has a
+# readable ifindex file AND answers `ip link show dev`; require BOTH before an
+# entry can become a candidate.
 detect_candidates() {
     local dev path
-    for path in /sys/class/net/*; do
+    # sysfs netdev dir; an explicit override is accepted only so the detector
+    # can be exercised against a fixture tree in tests - production callers
+    # always use the default.
+    local sysfs="${1:-/sys/class/net}"
+    for path in "$sysfs"/*; do
         [ -e "$path" ] || continue
         dev="${path##*/}"
         [ "$dev" != lo ] || continue
         # only names in our supported charset can ever be managed here; a real
         # name containing '@'/':'/' '/whitespace is skipped, NOT truncated.
         valid_ifname "$dev" || continue
+        # sysfs pseudo-entries (e.g. bonding_masters) have no ifindex file -
+        # they are not netdevices, skip them before any `ip` probe.
+        [ -f "$path/ifindex" ] || continue
+        # and the entry must resolve to a live interface right now.
+        if_exists "$dev" || continue
         # skip VLAN children - identified by link KIND, not by name.
         if_kind_is_vlan "$dev" && continue
         printf '%s\n' "$dev"
