@@ -1,0 +1,29 @@
+Evidence sample - skutečně zachycený odrážený paket (amd64+arm64, interní net).
+
+Reflektor: BASE_IF=eth0, VLAN_LIST=10,20, IP_MODE=static,
+           STATIC_MAP='10:10.90.10.1/24,20:10.90.20.1/24'
+
+Klient c10 (seg10, eth0.10=10.90.10.2) announce (IP TTL=255 per RFC 6762):
+  PTR _e2eok._tcp.local -> inst1._e2eok._tcp.local
+  SRV inst1._e2eok._tcp.local -> host1.local:80
+  TXT inst1._e2eok._tcp.local [k=v]
+  A   host1.local -> 10.90.10.2
+
+Klient c20 (seg20, eth0.20=10.90.20.2) zachytí (src = reflektor seg20 IP):
+
+  10.90.20.1: PTR _e2eok._tcp.local. -> inst1._e2eok._tcp.local.;
+              SRV inst1._e2eok._tcp.local. -> host1.local.:80;
+              TXT inst1._e2eok._tcp.local. [k=v];
+              A host1.local. -> 10.90.10.2
+
+Query opačným směrem (seg20 -> seg10): na seg10 dorazí paket od 10.90.10.1
+(IP reflektoru na seg10) nesoucí přesnou otázku 'Q _e2eq._tcp.local. type=PTR'.
+
+Filtr (_e2eok): matching služba se odráží s plnými záznamy; non-matching
+_e2eno služba (PTR/SRV/TXT) je potlačena. POZN.: avahi 0.9 stejně přepošle
+holý A záznam hostitele - reflect-filters filtruje služby, ne adresní záznamy.
+
+Negativní testy jsou důvěryhodné: listener se hlásí __READY__ až po bind+join
+na konkrétním IF, sender __SENT__ po odeslání, kontejner hlásí exit code.
+Self-check (#7): listener na neexistujícím IF -> wait_ready selže + nonzero
+exit - harness nikdy nefalšuje "empty" jako pass.

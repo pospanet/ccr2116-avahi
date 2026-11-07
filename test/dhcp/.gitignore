@@ -1,0 +1,4 @@
+# Generated per-run result logs and Python bytecode cache.
+results/
+__pycache__/
+*.pyc

@@ -1,0 +1,12 @@
+# Shell skripty a configy musí mít LF, jinak se rozbijí při mountu/spuštění
+# v Linux kontejneru na Windows hostu (CRLF -> /bin/bash: \r: command not found).
+*.sh            text eol=lf
+*.tmpl          text eol=lf
+Dockerfile      text eol=lf
+*.rsc           text eol=lf
+*.py            text eol=lf
+# test skripty
+test/**         text eol=lf
+# binární netextové
+*.tar           binary
+*.tar.gz        binary

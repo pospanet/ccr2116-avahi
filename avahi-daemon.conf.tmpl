@@ -1,18 +1,40 @@
 [server]
-host-name=%h
+# Pure mDNS reflector: do not register/publish a local hostname.
 domain-name=local
 use-ipv4=yes
 use-ipv6=no
+# Restrict strictly to the interfaces we manage/allow - never the trunk.
 allow-interfaces={{ALLOW_INTERFACES}}
+# No D-Bus daemon is installed; avahi must not require it.
+enable-dbus=no
+# Do not forbid other processes binding UDP 5353 on this host - inside this
+# dedicated container nothing else should, but 'yes' would hard-fail startup
+# on hosts that legitimately share the port. Keep permissive.
+disallow-other-stacks=no
+check-response-ttl=no
+# Reasonable cache / rate limits for a reflector on a routed segment.
+cache-entries-max=4096
+ratelimit-interval-usec=1000000
+ratelimit-burst=1000
 
 [wide-area]
 enable-wide-area=no
 
 [publish]
-publish-addresses=yes
+# We publish nothing - this is a reflector, not a service announcer.
+disable-publishing=yes
+publish-addresses=no
 publish-hinfo=no
 publish-workstation=no
-publish-domain=yes
+publish-domain=no
 
 [reflector]
 enable-reflector=yes
+# Do not translate between IPv4 and IPv6.
+reflect-ipv=no
+# Optional allow-list of service names; empty = reflect everything.
+{{REFLECT_FILTERS}}
+
+[rlimits]
+# Slightly raise FD limit if the base allows; harmless if already high.
+rlimit-nofile=256

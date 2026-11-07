@@ -1,0 +1,162 @@
+name: CI
+
+# CI běží na PR/push do vlastní větve. Nepublikuje image, nedeployuje,
+# neprovádí žádné externí změny - jen build + lokální testy + scan.
+# Lint běží lokálně v kontejneru (koalaman/shellcheck), ne přes GitHub Checks
+# API, takže stačí contents: read (žádné checks:write).
+on:
+  pull_request:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (bash -n + shellcheck + Python AST v kontejneru)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash syntax check (all shell scripts)
+        run: |
+          for f in entrypoint.sh healthcheck.sh lib.sh \
+                    test/smoke.sh test/runtime-security.sh test/fixture-log.sh test/e2e/run.sh; do
+            bash -n "$f"
+          done
+      - name: Python AST parse check (stdlib compile, no .pyc written)
+        run: |
+          python3 - <<'EOF'
+          import ast, sys
+          for f in ("test/e2e/mdns.py", "test/dhcp/dhcp_lab.py"):
+              ast.parse(open(f, encoding="utf-8").read(), filename=f)
+          print("python AST OK")
+          EOF
+      - name: ShellCheck (container, info suppressed, errors fail)
+        # -x sleduje source; SC1091 (source uvnitř image) je záměrný info.
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.10.0 \
+            -x -S error -e SC1091 \
+            /mnt/entrypoint.sh /mnt/healthcheck.sh /mnt/lib.sh \
+            /mnt/test/smoke.sh /mnt/test/runtime-security.sh /mnt/test/fixture-log.sh /mnt/test/e2e/run.sh
+
+  build-test-amd64:
+    name: Native amd64 build + smoke + security + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image (amd64, default docker driver)
+        run: docker build --platform linux/amd64 -t ccr2116-avahi:ci-amd64 .
+      - name: Fixture log regression (3, no extra capabilities)
+        run: |
+          docker run --rm --network none --entrypoint /bin/bash \
+            -v "$PWD/test:/t:ro" ccr2116-avahi:ci-amd64 /t/fixture-log.sh
+      - name: Smoke tests (60, --network none)
+        run: |
+          docker run --rm --network none \
+            --cap-add NET_ADMIN --cap-add NET_RAW \
+            --entrypoint /bin/bash -v "$PWD/test:/t:ro" \
+            ccr2116-avahi:ci-amd64 /t/smoke.sh
+      - name: Runtime security tests (12, --network none)
+        run: |
+          docker run --rm --network none \
+            --cap-add NET_ADMIN --cap-add NET_RAW \
+            --entrypoint /bin/bash -v "$PWD/test:/t:ro" \
+            ccr2116-avahi:ci-amd64 /t/runtime-security.sh
+      - name: Build e2e image (runtime + python3) from LOCAL runtime image
+        # docker build (docker driver) vidí image právě vytvořený výše -
+        # nepoužíváme docker-container buildx, který by hledal registry.
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg RUNTIME_IMAGE=ccr2116-avahi:ci-amd64 \
+            -f test/e2e/Dockerfile -t ccr2116-avahi-e2e:ci-amd64 .
+      - name: E2E mDNS reflection (8, internal tagged net)
+        run: |
+          IMG=ccr2116-avahi:ci-amd64 \
+          TESTIMG=ccr2116-avahi-e2e:ci-amd64 \
+          PLATFORM=linux/amd64 \
+          bash test/e2e/run.sh
+
+  dhcp-amd64:
+    name: DHCP/IPv4LL lab (native amd64, ~5 min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Jen native amd64 - žádný QEMU, žádný --privileged, žádný SYS_ADMIN.
+      # Driver staví runtime + dnsmasq lab image a používá jen
+      # namespace-scoped --sysctl promote_secondaries uvnitř netns kontejneru.
+      - name: Build runtime image (amd64)
+        run: docker build --platform linux/amd64 -t ccr2116-avahi:ci-dhcp .
+      - name: DHCP lab (real lease/renew/LL/fallback, native amd64)
+        run: |
+          python3 test/dhcp/dhcp_lab.py \
+            --base-image ccr2116-avahi:ci-dhcp \
+            --lab-image ccr2116-avahi-dhcp:ci
+      # Pozn.: na ARM64/QEMU dhcpcd privsep socket selhává - dynamic DHCP se
+      # NEspouští na emulaci a NEpočítá se jako green. Viz test/dhcp/README.md.
+
+  build-test-arm64:
+    name: ARM64 (QEMU) build + smoke + security + e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Jen QEMU binfmt; žádný docker-container builder, aby 'docker build'
+      # používal výchozí docker driver a viděl lokálně postavený runtime image.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Build runtime image (arm64, emulated, default driver)
+        run: docker build --platform linux/arm64 -t ccr2116-avahi:ci-arm64 .
+      - name: Fixture log regression (arm64, no extra capabilities)
+        run: |
+          docker run --rm --platform linux/arm64 --network none --entrypoint /bin/bash \
+            -v "$PWD/test:/t:ro" ccr2116-avahi:ci-arm64 /t/fixture-log.sh
+      - name: Smoke tests (arm64, emulated)
+        run: |
+          docker run --rm --platform linux/arm64 --network none \
+            --cap-add NET_ADMIN --cap-add NET_RAW \
+            --entrypoint /bin/bash -v "$PWD/test:/t:ro" \
+            ccr2116-avahi:ci-arm64 /t/smoke.sh
+      - name: Runtime security tests (arm64, emulated)
+        run: |
+          docker run --rm --platform linux/arm64 --network none \
+            --cap-add NET_ADMIN --cap-add NET_RAW \
+            --entrypoint /bin/bash -v "$PWD/test:/t:ro" \
+            ccr2116-avahi:ci-arm64 /t/runtime-security.sh
+      - name: Build e2e image (arm64) from LOCAL runtime image
+        run: |
+          docker build --platform linux/arm64 \
+            --build-arg RUNTIME_IMAGE=ccr2116-avahi:ci-arm64 \
+            -f test/e2e/Dockerfile -t ccr2116-avahi-e2e:ci-arm64 .
+      - name: E2E mDNS reflection (arm64, emulated)
+        run: |
+          IMG=ccr2116-avahi:ci-arm64 \
+          TESTIMG=ccr2116-avahi-e2e:ci-arm64 \
+          PLATFORM=linux/arm64 \
+          bash test/e2e/run.sh
+
+  trivy:
+    name: Image vulnerability scan (Trivy, container CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image (amd64)
+        run: docker build --platform linux/amd64 -t ccr2116-avahi:ci-scan .
+      # Jednorázový parent scan aquasec/trivy:0.76.2 (Nov 2026) = 0 HIGH/CRIT
+      # včetně unfixed. Kontejner CLI --input image tar -> žádný docker.sock
+      # mount, žádná globální instalace. Politika: fail na fixable HIGH/CRIT.
+      - name: Save image to tar
+        run: docker save ccr2116-avahi:ci-scan -o /tmp/img.tar
+      - name: Trivy scan (fail on fixable HIGH/CRITICAL)
+        run: |
+          docker run --rm -v /tmp:/scan:ro aquasec/trivy:0.76.2 \
+            image --input /scan/img.tar \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+      # Pozn.: čistý scan z jednoho data není trvalá záruka; nepokrývá chyby
+      # ve vlastním kódu. Parent full-scan (all, incl. unfixed) = clean.

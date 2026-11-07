@@ -1,0 +1,23 @@
+# Build context hygiene - do image neposílat repo metadata, editory, cache.
+.git
+.gitignore
+.gitattributes
+.github
+# editor/IDE
+.vscode
+.idea
+*.swp
+*~
+# OS / temp
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+# python / test cache + generated outputs
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+test/dhcp/results/
+# NOTE: test/ se do runtime image NEkopíruje (Dockerfile copy jen konkrétní
+# soubory), ale test/e2e/Dockerfile musí test kontext vidět -> test/ tu není.
