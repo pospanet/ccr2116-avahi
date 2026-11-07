@@ -217,29 +217,39 @@ nemá `--sysctl` jako container property, takže prerekvizita
 
 ---
 
-## 4) Publish — pouze explicitně, ručně, na vlastní registry/tag
+## 4) Publish — pouze explicitně, ručně, na Docker Hub
 
-Nespouštět jako součást buildu. Příklad (upravit registry/tag):
+`--push` jde rovnou do registry (žádný `--load`, žádný `docker save`) —
+jeden `buildx` krok buildne arm64 image a pushne ho na Docker Hub.
 
 ```bash
-docker login <registry>
+# macOS / Linux / Git-Bash / PowerShell — stejné
+docker login
 
-# arm64 produkční image
-docker buildx build --platform linux/arm64 \
-  -t <registry>/<user>/ccr2116-avahi:X.Y.Z-arm64 --push .
+# Cíl: Docker Hub repo pospa/avahi-reflector, čistě linux/arm64 (CCR2116).
+# Jediný příkaz buildne + pushne tag X.Y.Z-arm64.
+docker buildx build --platform linux/arm64/v8 \
+  -t pospa/avahi-reflector:X.Y.Z-arm64 --push .
+```
 
-# multi-arch manifest (volitelné, amd64+arm64 najednou přes buildx):
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t <registry>/<user>/ccr2116-avahi:X.Y.Z --push .
+```powershell
+# Windows PowerShell — identické
+docker login
+docker buildx build --platform linux/arm64/v8 `
+  -t pospa/avahi-reflector:X.Y.Z-arm64 --push .
 ```
 
 **Pozn.:**
 
-- Nepoužívat `--push` do produkce bez předchozího lokálního ověření (krok 2).
-- `docker build` nemá `--push` — po `docker build` pushni přes `docker tag` +
-  `docker push`, nebo použij `buildx` (vytváří manifest).
-- Po push ověř digest:
-  `docker buildx imagetools inspect <registry>/<user>/ccr2116-avahi:X.Y.Z-arm64`.
+- Nepoužívat `--push` bez předchozího lokálního ověření (krok 2).
+- `--platform linux/arm64/v8` = ARMv8 explicitní variant (odpovídá CCR2116
+  ARM64 SoC); `linux/arm64` je ekvivalent, `v8` je přesnější.
+- `docker build` nemá `--push` — pro push použij `buildx` (nebo `docker
+  build` + `docker tag` + `docker push` ve dvou krocích).
+- Po push ověř digest / platformu:
+  `docker buildx imagetools inspect pospa/avahi-reflector:X.Y.Z-arm64`.
+- **image = jen arm64** — na hubu bude `X.Y.Z-arm64` arm64 manifest; RouterOS
+  stáhne ten. Žádný multi-arch manifest se nevytváří (cíl je čistě CCR2116).
 - Base image `alpine:3.24.4` není digest-pinned a `apk` balíčky se mohou
   aktualizovat — pro plnou reprodukovatelnost zvaž pin digestu
   (`FROM alpine:3.24.4@sha256:<digest>`), viz `README.md` § Omezení.
