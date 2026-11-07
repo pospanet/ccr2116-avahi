@@ -222,21 +222,30 @@ nemá `--sysctl` jako container property, takže prerekvizita
 `--push` jde rovnou do registry (žádný `--load`, žádný `docker save`) —
 jeden `buildx` krok buildne arm64 image a pushne ho na Docker Hub.
 
+Každý release pushne **všechny tři tagy najednou**: verzi, verzi s `-arm64`
+sufixem a `latest` (všechny ukazují na tentýž arm64 image).
+
 ```bash
 # macOS / Linux / Git-Bash / PowerShell — stejné
 docker login
 
-# Cíl: Docker Hub repo pospa/avahi-reflector, čistě linux/arm64 (CCR2116).
-# Jediný příkaz buildne + pushne tag X.Y.Z-arm64.
+# Cíl: Docker Hub repo pospa/ccr2116-avahi, čistě linux/arm64 (CCR2116).
+# Jediný příkaz buildne + pushne všechny tagy najednou.
 docker buildx build --platform linux/arm64/v8 \
-  -t pospa/avahi-reflector:X.Y.Z-arm64 --push .
+  -t pospa/ccr2116-avahi:X.Y.Z \
+  -t pospa/ccr2116-avahi:X.Y.Z-arm64 \
+  -t pospa/ccr2116-avahi:latest \
+  --push .
 ```
 
 ```powershell
 # Windows PowerShell — identické
 docker login
 docker buildx build --platform linux/arm64/v8 `
-  -t pospa/avahi-reflector:X.Y.Z-arm64 --push .
+  -t pospa/ccr2116-avahi:X.Y.Z `
+  -t pospa/ccr2116-avahi:X.Y.Z-arm64 `
+  -t pospa/ccr2116-avahi:latest `
+  --push .
 ```
 
 **Pozn.:**
@@ -245,10 +254,12 @@ docker buildx build --platform linux/arm64/v8 `
 - `--platform linux/arm64/v8` = ARMv8 explicitní variant (odpovídá CCR2116
   ARM64 SoC); `linux/arm64` je ekvivalent, `v8` je přesnější.
 - `docker build` nemá `--push` — pro push použij `buildx` (nebo `docker
-  build` + `docker tag` + `docker push` ve dvou krocích).
-- Po push ověř digest / platformu:
-  `docker buildx imagetools inspect pospa/avahi-reflector:X.Y.Z-arm64`.
-- **image = jen arm64** — na hubu bude `X.Y.Z-arm64` arm64 manifest; RouterOS
+  build` + `docker tag` + `docker push` ve více krocích).
+- **`latest` se přepisuje** — každý release posune `latest` na nový image;
+  verzní tagy (`X.Y.Z`, `X.Y.Z-arm64`) zůstávají neměnné.
+- Po push ověř digest / platformu / všechny tagy:
+  `docker buildx imagetools inspect pospa/ccr2116-avahi:latest`.
+- **image = jen arm64** — na hubu budou všechny tagy arm64 manifest; RouterOS
   stáhne ten. Žádný multi-arch manifest se nevytváří (cíl je čistě CCR2116).
 - Base image `alpine:3.24.4` není digest-pinned a `apk` balíčky se mohou
   aktualizovat — pro plnou reprodukovatelnost zvaž pin digestu
